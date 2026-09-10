@@ -1,2 +1,7 @@
 regress/regress_result/timer_test.report
 workdir/*
+transcript
+regress/regress_result/gpio_test.report
+regress/regress_result/map_test.report
+regress/regress_result/usi_uart_test.report
+workdir/README

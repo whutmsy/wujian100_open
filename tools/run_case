@@ -49,7 +49,7 @@ if(!&GetOptions
 	(\%Opt,
 		'--h',	                #Print help message
 		'--nodump',             #Disable the waveform dump function in VCS simulation
-		'--sim_tool:s',         #Specify the simulation tools, support vcs and iverilog
+		'--sim_tool:s',         #Specify the simulation tools, support vcs, iverilog and questa
 		'--nomnt'))              #disable mnt module when running tb
 {
 	&print_usage();
@@ -67,13 +67,16 @@ if($Opt{'h'}) {
 
 my $s_vcs = 0;
 my $s_iverilog = 0;
+my $s_questa = 0;
 if(!defined($Opt{'sim_tool'}) || ($Opt{'sim_tool'} eq "vcs")){
 	$s_vcs = 1;
 }elsif($Opt{'sim_tool'} eq "iverilog"){
 	$s_iverilog = 1;
+}elsif($Opt{'sim_tool'} eq "questa"){
+	$s_questa = 1;
 }
-if(!$s_vcs && !$s_iverilog){
-	print "Invalid simulation tool! Support vcs or iverilog.\n";
+if(!$s_vcs && !$s_iverilog && !$s_questa){
+	print "Invalid simulation tool! Support vcs, iverilog or questa.\n";
 	exit(1);
 }
 
@@ -241,6 +244,18 @@ elsif($s_iverilog){
 	!system("iverilog -o test.vvp -Diverilog=1 -g2012 ../tb/busmnt.v  ../tb/tb.v ../tb/virtual_counter.v -f ../soc/wujian100_open_syn_for_iverilog.filelist -f ../soc/wujian100_open_lib_for_iverilog.filelist $wujian100_open_PATH/workdir/$had_v") or die "can't run iverilog";
         !system("vvp test.vvp") or die "can't run vvp";
 }
+elsif($s_questa){
+	my $had_v_q = "";
+	my $had_top_q = "";
+	if(defined($had_v) && $had_v ne ""){
+		$had_v_q = " ./$had_v";
+		(my $had_mod = $had_v) =~ s/\.v$//;
+		$had_top_q = " work.$had_mod";
+	}
+	!system("vlib work") or die "can't create Questa work library";
+	!system("vlog -sv -timescale 1ns/100ps +define+QUESTA_SIM $mnt_sim $dump_sim $vcs_incdir -f ../soc/wujian100_open_syn_for_iverilog.filelist -f ../soc/wujian100_open_lib_for_iverilog.filelist ../tb/busmnt.v ../tb/tb.v ../tb/virtual_counter.v $had_v_q") or die "can't run vlog";
+	!system("vsim -c -do \"run -all; quit -f\" work.wujian100_open_tb$had_top_q") or die "can't run vsim";
+}
 else{
   exit(1);
 }
@@ -258,8 +273,8 @@ Usage: run_case [options] case_name
 			Print run_case user guider on screen
 		[-nodump]:
 			Disable the waveform dump function in VCS simulation. If not specified, dump waveform function is enabled
-[-sim_tool vcs|iverilog]:      
-        		Specify the simulation tools, support vcs and iverilog
+[-sim_tool vcs|iverilog|questa]:      
+        		Specify the simulation tools, support vcs, iverilog and questa
 		[-nomnt]:
 			Disable the monitor module when running tb, monitor is enabled without this option
 Example:

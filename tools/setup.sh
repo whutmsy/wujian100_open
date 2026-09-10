@@ -19,6 +19,10 @@
 #set VCS license
 #export SNPSLMD_LICENSE_FILE=
 
+#set QuestaSim path (ModelSim/Questa)
+#export QUESTA_HOME=/mnt/d/questasim64_10.6c/win64
+#export PATH=$QUESTA_HOME:$PATH
+
 #set iverilog path (Ubuntu/WSL 默认位于 /usr/bin)
 iverilog_path=/usr/bin
 gtkwave_path=/usr/bin
