@@ -5,3 +5,10 @@ regress/regress_result/gpio_test.report
 regress/regress_result/map_test.report
 regress/regress_result/usi_uart_test.report
 workdir/README
+work/_info
+work/_lib.qdb
+work/_lib1_0.qdb
+work/_lib1_0.qpg
+work/_lib1_0.qtl
+work/_vmake
+work/_dpi/dpi.tfdb
