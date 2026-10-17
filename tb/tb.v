@@ -318,7 +318,9 @@ begin
 end
 
 
+`ifndef NO_MONITOR
 busmnt x_busmnt();
+`endif
 virtual_counter  x_virtual_counter ();
 
 `ifndef NO_DUMP

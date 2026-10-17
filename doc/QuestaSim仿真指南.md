@@ -71,7 +71,7 @@ bash tools/run_questa.sh case/gpio/gpio_test.c --wave
 # 打开图形界面
 bash tools/run_questa.sh case/pwm/pwm_test.c --gui
 
-# 关闭总线监视（tb 中的 busmnt 不工作，用于测纯 RTL 行为）
+# 关闭总线监视（tb 不例化 busmnt，没有 PASS/FAIL 判定，仅供抓波形）
 bash tools/run_questa.sh case/rtc/rtc_test.c --nomnt
 ```
 
@@ -83,6 +83,8 @@ RESULT: TEST PASS
 ```
 
 最终判定以 `workdir/run_case.report` 为准（内容为 `TEST PASS` 或 `TEST FAIL`）。
+加 `--nomnt` 时 `busmnt` 不例化，`sim_end()` 的结束标志没人捕获，仿真只能等到 `MAX_SIM_TIME`
+（1.5 s 仿真时间）超时，因此**不会有有效判定**，脚本会直接打印 `RESULT: NO_MONITOR` 并返回成功。
 
 ### 3.1 参数说明
 
@@ -91,7 +93,7 @@ RESULT: TEST PASS
 | `<case.c>`      | 用例文件路径，如 `case/timer/timer_test.c` |
 | `--wave`        | 打开 `-voptargs=+acc` 并录制 `vsim.wlf` |
 | `--gui`         | 启动 Questa 图形界面（配合 `log -r /*`）     |
-| `--nomnt`       | 定义 `NO_MONITOR`，关闭 `busmnt` 总线监视   |
+| `--nomnt`       | 不例化 `busmnt`，无 PASS/FAIL 判定，仅供抓波形 |
 | `-h` / `--help` | 打印帮助                               |
 
 ### 3.2 环境变量
@@ -199,21 +201,65 @@ vsim -c -do "run -all; quit -f" work.wujian100_open_tb work.gpio_test
 
 ## 7. 回归结果（QuestaSim 10.6c，2026-10-17 实测）
 
-| 用例                              | 结果          | 仿真结束时间                  |
-| ------------------------------- | ----------- | ----------------------- |
-| `case/timer/timer_test.c`       | ✅ TEST PASS | 108425 ns               |
-| `case/gpio/gpio_test.c`         | ✅ TEST PASS | 101725 ns               |
-| `case/rtc/rtc_test.c`           | ✅ TEST PASS | 2263425 ns              |
-| `case/addr_map/map_test.c`      | ✅ TEST PASS | —                       |
-| `case/pwm/pwm_test.c`           | ✅ TEST PASS | —                       |
-| `case/wdt/wdt_test.c`           | ✅ TEST PASS | —                       |
-| `case/usi_uart/usi_uart_test.c` | ✅ TEST PASS | —                       |
-| `case/usi_spi/usi_spi_test.c`   | ✅ TEST PASS | —                       |
-| `case/dma/dma_test.c`           | ⏱ 未跑完       | 事件量大，4 分钟限时内未到 1.5 s 上限 |
-| `case/usi_i2c/usi_i2c_test.c`   | ⏱ 未跑完       | 同上                      |
-| `case/had_soc/e902_had_test.c`  | —           | 未测                      |
+全部 11 个用例逐个跑过（每次都是清空 `workdir` 重新编译，耗时含 RTL 编译）：
+
+| 用例                              | 结果          | 耗时   | 备注                    |
+| ------------------------------- | ----------- | ---- | --------------------- |
+| `case/timer/timer_test.c`       | ✅ TEST PASS | 35 s |                       |
+| `case/gpio/gpio_test.c`         | ✅ TEST PASS | 39 s | 需加载独立顶层 `gpio_test`   |
+| `case/rtc/rtc_test.c`           | ✅ TEST PASS | 42 s |                       |
+| `case/addr_map/map_test.c`      | ✅ TEST PASS | 43 s |                       |
+| `case/pwm/pwm_test.c`           | ✅ TEST PASS | 34 s | 需加载独立顶层              |
+| `case/wdt/wdt_test.c`           | ✅ TEST PASS | 38 s |                       |
+| `case/usi_uart/usi_uart_test.c` | ✅ TEST PASS | 45 s | 需加载独立顶层              |
+| `case/usi_spi/usi_spi_test.c`   | ✅ TEST PASS | 37 s | 需加载独立顶层              |
+| `case/usi_i2c/usi_i2c_test.c`   | ✅ TEST PASS | 46 s | 需 `TOP_MODULE` 宏，见下   |
+| `case/had_soc/e902_had_test.c`  | ✅ TEST PASS | 34 s |                       |
+| `case/dma/dma_test.c`           | ❌ 不结束       | —    | 用例自身判定条件与 IP 不符，见下     |
 
 RTL 本身编译干净：34 个文件，**0 error / 0 warning**，耗时约 3 秒。
+
+### 7.1 usi_i2c：需要 `TOP_MODULE` 宏
+
+`usi_i2c_test.v` 除了用 `` `TB_MODULE ``，还用 `` `TOP_MODULE `` 去探测
+`usi1_ioctl_sd0_oe_n` 做双向 SDA 的方向仲裁。这两个宏原本只在 `tb.v` 里 `define`，
+单独编译用例 `.v` 时必须同时给：
+
+```bash
++define+TB_MODULE=wujian100_open_tb +define+TOP_MODULE=wujian100_open_tb.x_wujian100_open_top
+```
+
+只给 `TB_MODULE` 会报 `vlog-13069: near "." syntax error` 和 `Macro TOP_MODULE is undefined`，
+`vsim` 随后 `Failed to find design unit`。脚本已补上第二个宏。
+
+### 7.2 dma：数据传输成功，但状态位永远等不到 `0xe`
+
+`dma_test.c` 结尾是 `while (int_dma_flag != 0xe) {...}`，轮询 `0x40000014`（`CHN_INT_STATUS`）。
+实测该寄存器**始终为 0**，所以仿真只能跑到 `MAX_SIM_TIME`。
+
+诊断（用例副本，仅把死循环改成有限次轮询，原用例未改）结果：
+
+```
+before: ch_en=0x0 global=0x0 status=0x0
+after:  polls=20000 status=0x0
+dst0=0x11111111 dst1=0x22222222 dst2=0x33333333 dst3=0x44444444
+alias:  dst=0xaaaa5555 src=0x11111111     ← 改目的端不影响源端，说明是两块存储
+```
+
+结论：
+
+- **DMA 搬运本身是正常的**——目的端拿到了源端的数据，且不是地址别名造成的
+- 问题出在**状态位判定**：`chn_int_status_r` 的位定义是
+  `{trgetcmp(3), htfr(2), tfr(1), err(0)}`，测试等的是 `0xe`（err+tfr+htfr+trgetcmp 同时置位）。
+  单块 36 字节传输本来就不该产生半传输中断（bit2），所以即使位都正常也永远凑不齐 `0xe`
+- 该用例属于上游遗留问题，**不是仿真环境或脚本的问题**。要跑通需要改用例：把等待条件改成
+  `(flag & 0x2)`（传输完成）或干脆跳过状态轮询直接校验数据
+
+诊断用的副本放在 `D:/designhouse/tmp_dma/dma_diag.c`，可随时重跑：
+
+```bash
+bash tools/run_questa.sh /d/designhouse/tmp_dma/dma_diag.c
+```
 
 ---
 

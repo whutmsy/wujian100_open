@@ -218,7 +218,8 @@ echo "    test.pat 行数: $(wc -l < test.pat)"
 echo "==> [4/4] 编译 RTL 并仿真"
 # QUESTA_SIM 让 RTL 里的仿真专用分支生效；NO_DUMP 关掉综合用的信号转储
 DEFS="+define+QUESTA_SIM +define+NO_DUMP"
-# --nomnt 时给 tb 定义 NO_MONITOR，跳过总线监视逻辑（busmnt.v），可加速并减少日志
+# --nomnt 时给 tb 定义 NO_MONITOR，tb.v 里据此不例化 busmnt.v（注意：没有 case 的 .v 需要
+# 层次路径激励时才谈得上"加速"；主要收益是减日志和避免监视逻辑干扰波形观察）
 [ "$NOMNT" = "1" ] && DEFS="$DEFS +define+NO_MONITOR"
 
 # 默认只有一个顶层（SoC 的 tb）
@@ -241,10 +242,14 @@ vlog -sv -timescale 1ns/100ps $DEFS +incdir+../soc/params \
      ../tb/busmnt.v ../tb/tb.v ../tb/virtual_counter.v 2>&1 | \
      grep -E "^\*\*|Error|Warning|Errors:" || true
 
-# 用例 .v 里用 `TB_MODULE 拼层次路径，需要单独带宏编译（q10.6 的宏不跨文件传递）
+# 用例 .v 里用 `TB_MODULE / `TOP_MODULE 拼层次路径，需要单独带宏编译（q10.6 的宏不跨文件传递）。
+# tb.v 里这两个宏的值分别是 wujian100_open_tb 和 wujian100_open_tb.x_wujian100_open_top，
+# 这里要给出一模一样的定义；usi_i2c 的模型用到了 TOP_MODULE，只给 TB_MODULE 会报语法错
 if [ -n "$CASE_V" ]; then
-  vlog -sv -timescale 1ns/100ps +define+TB_MODULE=wujian100_open_tb $CASE_V 2>&1 | \
-     grep -E "^\*\*|Error|Warning|Errors:" || true
+  vlog -sv -timescale 1ns/100ps \
+       +define+TB_MODULE=wujian100_open_tb \
+       +define+TOP_MODULE=wujian100_open_tb.x_wujian100_open_top \
+       $CASE_V 2>&1 | grep -E "^\*\*|Error|Warning|Errors:" || true
 fi
 
 # ---- 三种运行模式
@@ -265,6 +270,17 @@ fi
 # 判定依据不是 printf 输出，而是 tb/busmnt.v：用例调用 sim_end() 往 0x20007c50 写 0x2002，
 # busmnt 捕获后把结论写进 run_case.report 并 $finish，所以读这个文件即可
 echo
+
+# --nomnt 时 busmnt 没有被例化，没人捕获 sim_end 的结束标志，仿真只能等 tb.v 的
+# MAX_SIM_TIME（1.5s 仿真时间）超时，由超时分支写一个 TEST FAIL——这个结果不代表用例失败，
+# 所以这里不当作判定，只提示用户这是波形调试模式
+if [ "$NOMNT" = "1" ]; then
+  echo "==> 结果: 已关闭总线监视（--nomnt），无 PASS/FAIL 判定，仅供波形调试"
+  echo "RESULT: NO_MONITOR"
+  [ "$WAVE" = "1" ] && echo "==> 波形: $WORK/vsim.wlf (vsim -view $WORK/vsim.wlf)"
+  exit 0
+fi
+
 if [ -f run_case.report ]; then
   RES=$(cat run_case.report)
   echo "==> 结果: $RES"

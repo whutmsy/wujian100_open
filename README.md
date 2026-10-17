@@ -5,15 +5,15 @@
       |--riscv_toolchain      //tool chain install directory download from t-head.cn
       |--wujian100_open       //wujian100_open project get from github
         |--case               //test case example for simulation
-        |--doc                //wujian100_open user guide
+        |--doc                //user guide, code architecture analysis, QuestaSim simulation guide
         |--fpga               //FPGA script
         |--lib                //compile script for simulation
         |--regress            //regression result
         |--sdk                //software design kit
         |--soc                //Soc RTL source code
         |--tb                 //test bench
-        |--tools              //simulation script and setup file
-        |--workdir            //simulation directory
+        |--tools              //simulation script and setup file (run_case, run_questa.sh)
+        |--workdir            //simulation directory, recreated by every simulation run
         |--LICENSE
         |--README.md
 # Get Started
@@ -24,6 +24,9 @@
     1. prepare a tool chain install directory named 'riscv_toolchain'  // use the c shell command like 'mkdir riscv_toolchain'
     2. download the tool chain from the url https://occ.t-head.cn/community/download?id=3913221581316624384
     3. install the tool chain to the riscv_toolchain dirctory
+    4. note: the build distributed on occ.t-head.cn is a Linux ELF binary and cannot be executed
+       on Windows. On Windows install a native build instead, for example xPack
+       riscv-none-elf-gcc (see 'Simulation on Windows with QuestaSim' below).
 # Get open source EDA tools
     centos7/rhel7:  sudo yum install iverilog verilator gtkwave
     ubuntu/debian:  sudo apt-get install iverilog verilator gtkwave
@@ -33,6 +36,33 @@
     3. source setup.csh         //if not success you can touch a new file named setup.csh and copy the content to the new file. then source the new file
     4. cd wujian100_open/workdir
     5. if you want to use iverilog as simulation tool please execute the command '../tools/run_case -sim_tool iverilog ../case/timer/timer_test.c' or if you want to use vcs as simulation tool please execute the command '../tools/run_case -sim_tool vcs ../case/timer/timer_test.c'
+# Simulation on Windows with QuestaSim
+    tools/run_case itself needs perl and GNU make, and the bundled riscv_toolchain is a Linux ELF
+    binary, so neither works on a plain Windows machine. tools/run_questa.sh does the same job
+    without make: it calls gcc / ld / objcopy and Srec2vmem.py directly, then runs QuestaSim.
+    The RTL, testbench and result format are identical to the upstream flow.
+    1. install QuestaSim and make sure vsim / vlog / vlib are available
+       (tested with QuestaSim 10.6c, e.g. D:/questasim64_10.6c/win64 - it is added to PATH automatically)
+    2. install a Windows build of RISC-V GCC, e.g. xPack riscv-none-elf-gcc 15.2.0:
+       D:/designhouse/toolchains/xpack-riscv-none-elf-gcc-15.2.0-1/bin
+       the script looks for it in PATH and in ../toolchains/xpack-riscv-none-elf-gcc-*/bin;
+       set RISCV_GCC=<full path to gcc> if it is installed somewhere else
+    3. run it from the repository root (Git Bash, or PowerShell with the full path to bash.exe):
+         bash tools/run_questa.sh case/timer/timer_test.c          //run a test case
+         bash tools/run_questa.sh case/gpio/gpio_test.c --wave     //record waveform vsim.wlf
+         bash tools/run_questa.sh case/pwm/pwm_test.c --gui        //open the QuestaSim GUI
+         bash tools/run_questa.sh case/rtc/rtc_test.c --nomnt      //skip the bus monitor
+       --nomnt does not instantiate busmnt, so there is no PASS/FAIL verdict - use it only
+       when you just want the waveform without the monitor noise.
+    4. results
+         workdir/run_case.report    //TEST PASS or TEST FAIL, printed as 'RESULT: ...' on the console
+         workdir/transcript         //full simulation log
+         workdir/vsim.wlf           //waveform, only with --wave; open it with 'vsim -view workdir/vsim.wlf'
+    5. the environment variables RISCV_GCC, QUESTA_BIN and PYTHON override the auto-detected tools
+    6. read doc/QuestaSim仿真指南.md for the compile flags, known pitfalls and the current
+       regression status of every test case under case/
+    note: run the script in the foreground. When it is started as a background job the sandbox
+          blocks writes to workdir and the run fails silently.
 # Get ready for FPGA bit generation
     1. make sure you have the synplify and license
     2. cd wujian100_open/fpga/synplify

@@ -26,10 +26,10 @@
 | `tb/` | 仿真 testbench（`tb.v`、`busmnt.v`、`virtual_counter.v`） |
 | `case/` | 各外设 C 测试用例 + 对应 `.v` |
 | `lib/` | 仿真编译脚本、`crt0.s`、newlib 封装、linker |
-| `tools/` | `run_case` 仿真脚本、`Srec2vmem`、环境配置 |
+| `tools/` | `run_case`（上游，需 perl+make）、`run_questa.sh`（Windows/QuestaSim 版）、`Srec2vmem` |
 | `fpga/` | Synplify / Vivado 工程与约束 |
 | `regress/` | 回归测试报告 |
-| `doc/` | 用户指南（docx + md） |
+| `doc/` | 用户指南（docx + md）、本架构文档、`QuestaSim仿真指南.md` |
 
 ---
 
@@ -135,13 +135,17 @@ sdk/
 ### 仿真
 
 ```bash
-# 使用 iverilog 或 vcs
+# Linux（上游流程，需 perl + GNU make + riscv_toolchain）
 ../tools/run_case -sim_tool iverilog ../case/timer/timer_test.c
 ../tools/run_case -sim_tool vcs      ../case/timer/timer_test.c
+
+# Windows + QuestaSim（无 make 依赖，在仓库根目录执行）
+bash tools/run_questa.sh case/timer/timer_test.c
 ```
 
 - `tb/tb.v` 例化 DUT，`busmnt.v` 监视总线，`virtual_counter.v` 提供虚拟计数
 - `case/` 提供 Timer / DMA / GPIO / PWM / RTC / USI / WDT 用例
+- Windows 下的环境准备与常见问题见 `doc/QuestaSim仿真指南.md`
 
 ### 综合 / FPGA
 
