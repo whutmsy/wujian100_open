@@ -8,34 +8,98 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 */
+
+/*
+ * linker.lcf - wujian100_open 链接脚本（GNU ld 语法）
+ *
+ * 作用：把编译器产出的 .o 拼成 elf，决定"哪个字节放在哪个地址"。
+ * E902 复位后从 0x0 取第一条指令，所以下面第一条规则（crt0.o 排最前）
+ * 直接决定程序能否启动。
+ *
+ * 地址空间（对应 SoC 的 sms 存储子系统）：
+ *   0x00000000 ~ 0x0000ffff   ISRAM 64KB  —— 代码、已初始化数据、未初始化数据全在这里
+ *   0x20000000 起             DSRAM       —— 只放栈，不参与镜像
+ *
+ * 本脚本没有做 VMA/LMA 分离（没有 AT> 子句），因此 .data 的加载地址等于运行
+ * 地址，启动代码不需要把数据从 ROM 搬到 RAM，crt0.s 里也确实没有搬运逻辑。
+ */
+
 MEMORY
 {
-MEM1(RWX)  : ORIGIN = 0x00000000,  LENGTH = 0x10000
-RAND(RW)  : ORIGIN = 0x0000eff0,  LENGTH = 0x1000
-}
-__kernel_stack = 0x2000fff8 ;
-__user_stack = 0x2000fcf8 ;
-__tkernel_stack = 0x2000f8f8 ;
-__tuser_stack = 0x2000f4f8 ;
+  /* 主存储区：ISRAM，可读可写可执行。整个镜像都必须落在这一段里 */
+  MEM1(RWX)  : ORIGIN = 0x00000000,  LENGTH = 0x10000
 
+  /* 随机数专用区。注意它的范围是 0xeff0~0xffff，完整落在 MEM1 内部（重叠）。
+     目前没有任何输入段匹配 *(.rand*)，所以该输出段长度为 0，实际不占用地址。
+     真要用它，代码总量必须小于 0xeff0，否则 .rand 会和 .text 重叠。 */
+  RAND(RW)  : ORIGIN = 0x0000eff0,  LENGTH = 0x1000
+}
+
+/* 四个栈顶地址，全部在 DSRAM（0x20000000 起），不在 ISRAM 内。
+   crt0.s:32 的 `la x2, __kernel_stack` 就是从这里取栈顶，所以符号名不能改。
+   四个栈按 0x300~0x400 的固定间隔向下排列，栈从各自栈顶往下增长，
+   这个间隔就是单个栈的容量上限，改地址时要保持互不重叠。 */
+__kernel_stack = 0x2000fff8 ;   /* 内核栈顶，crt0 实际使用这一个 */
+__user_stack = 0x2000fcf8 ;     /* 用户态栈顶，与上一个间隔 0x300 */
+__tkernel_stack = 0x2000f8f8 ;  /* 任务内核栈顶，间隔 0x400 */
+__tuser_stack = 0x2000f4f8 ;    /* 任务用户栈顶，间隔 0x400 */
+
+/* elf 头中记录的入口点，对应 crt0.s:15 的 __start。
+   实际能否从 0x0 开始执行，还依赖下面 .text 的第一条规则。 */
 ENTRY(__start)
 
 SECTIONS {
+    /* 代码段。第一条 crt0.o (.text) 是硬性要求：
+       E902 复位矢量固定指向 0x0，必须让启动代码正好落在 0x0，
+       否则 CPU 取到的是别的函数的开头，表现为跑飞或立即异常。
+       第二条通配规则把其余所有 .o 的代码接在后面。
+
+       另外 *(.rodata*) 也写在这里 —— 只读常量被并入代码段，
+       所以镜像里不存在独立的 .rodata（可用 objdump -h 验证）。 */
     .text :
     {
         crt0.o (.text)
         *(.text*)
         *(.rodata*)
     } >MEM1
+
+    /* 已初始化的全局/静态变量。同样放 ISRAM，紧跟代码之后。
+       由于没有单独的加载域，这些初值在镜像里就是最终值，无需启动时搬运 */
     .data :
     {
         *(.data*)
     } >MEM1
+
+    /* 未初始化的全局/静态变量。NOBITS 类型：只占地址，不占文件，
+       objcopy -O srec 会直接跳过这一段。
+
+       这里有两个语法问题，都不影响当前构建，但值得知道：
+       1) *(.bss) 没带通配符，只匹配名字恰好是 .bss 的输入段。
+          而 -fdata-sections 会把变量拆成 .bss.__sf、.sbss.errno 这类子段，
+          它们匹配不上，最终由链接器的 orphan 机制自动安置
+          （map 中可见 .bss.__sf 落在 0x97fc，恰好紧跟 .data 之后）。
+          想显式控制位置应写成 *(.bss*)。
+          由于精确匹配到的输入段都是空的，本输出段自身大小为 0：
+              map: `.bss   0x000097fc   0x0`
+       2) *.(COMMON) 是笔误，正确写法是 *(COMMON)。
+          当前 gcc 默认 -fno-common，COMMON 符号已不存在，故无实际影响。
+
+       运行时靠什么清零？不是 crt0.s（它没有清 bss 的代码），而是
+       tb 加载 test.pat 时对 srec 地址空洞补 0 的副作用。
+       前提是 .bss 后面还有带内容的段；当前 .srodata / .eh_frame 总在其后，
+       所以这条链成立。若某用例的 .bss 恰好位于镜像末尾，就不会被补零。 */
     .bss :
     {
         *(.bss) *.(COMMON)
     } >MEM1
+
+    /* 这一段实际上是空的：上面的 .text 已经用 *(.rodata*) 把常量全部收走，
+       而链接器按书写顺序匹配输入段，被消耗过的不会再匹配一次。
+       保留它只是占位，真正的只读常量仍位于 .text 段内
+       （map 中可见 __v_printf.o 的 .rodata 落在 0x8c0c，属于 .text）。 */
     .rodata :  {   *( .rodata* ) } >MEM1
+
+    /* 随机数区，落在 RAND。当前没有输入段匹配 *(.rand*)，段长度为 0 */
     .rand :
     {
         *(.rand*)

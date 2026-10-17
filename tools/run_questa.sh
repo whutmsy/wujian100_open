@@ -287,6 +287,9 @@ if [ -f run_case.report ]; then
   # RESULT: 前缀是给批处理脚本 grep 用的稳定标记（中文在管道里可能因编码匹配不到）
   echo "RESULT: $RES"
   [ "$WAVE" = "1" ] && echo "==> 波形: $WORK/vsim.wlf (vsim -view $WORK/vsim.wlf)"
+  # 兜底置 0：上面那条 [ ] 测试在 WAVE=0 时返回 1，若作为最后一条命令会让脚本以 1 退出，
+  # 批处理会误判为失败，所以成功路径显式返回 0
+  exit 0
 else
   # 没有 report 通常意味着仿真没跑到 sim_end：死等标志、超时被杀、或 RTL 编译失败
   echo "==> 结果: 无 run_case.report（可能超时或未执行 sim_end）"
