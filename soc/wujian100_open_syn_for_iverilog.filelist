@@ -14,6 +14,7 @@
 ../soc/aou_top.v
 ../soc/matrix.v
 ../soc/dummy.v
+../soc/vpu_top.v
 ../soc/pwm.v
 ../soc/usi0.v
 ../soc/apb0_sub_top.v

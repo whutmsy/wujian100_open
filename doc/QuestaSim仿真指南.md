@@ -215,6 +215,7 @@ vsim -c -do "run -all; quit -f" work.wujian100_open_tb work.gpio_test
 | `case/usi_spi/usi_spi_test.c`   | ✅ TEST PASS | 37 s | 需加载独立顶层              |
 | `case/usi_i2c/usi_i2c_test.c`   | ✅ TEST PASS | 46 s | 需 `TOP_MODULE` 宏，见下   |
 | `case/had_soc/e902_had_test.c`  | ✅ TEST PASS | 34 s |                       |
+| `case/vpu/vpu_test.c`           | ✅ TEST PASS | 12 s | 新增向量协处理器，见 `doc/VPU向量协处理器.md` |
 | `case/dma/dma_test.c`           | ❌ 不结束       | —    | 用例自身判定条件与 IP 不符，见下     |
 
 RTL 本身编译干净：34 个文件，**0 error / 0 warning**，耗时约 3 秒。

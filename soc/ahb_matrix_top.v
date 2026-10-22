@@ -852,7 +852,11 @@ ahb_dummy_top  x_main_dmemdummy_top0 (
   .hwrite                      (hmain0_dmemdummy0_s5_hwrite),
   .intr                        (main_dmemdummy0_intr       )
 );
-ahb_dummy_top  x_main_dummy_top0 (
+/* S7 (0x4001_0000 - 0x4001_ffff) hosts the vector coprocessor instead of a
+   plain dummy slave. The instance name is kept as x_main_dummy_top0 and the
+   port list is identical to ahb_dummy_top on purpose, so the hierarchical
+   force in case/addr_map/map_test.v keeps working. */
+vpu_top  x_main_dummy_top0 (
   .haddr                   (hmain0_dummy0_s7_haddr ),
   .hclk                    (pmu_dummy0_hclk        ),
   .hprot                   (hmain0_dummy0_s7_hprot ),
