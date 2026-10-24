@@ -13,3 +13,4 @@ work/_lib1_0.qtl
 work/_vmake
 work/_dpi/dpi.tfdb
 .workbuddy/*
+sdk/projects/**/out/
