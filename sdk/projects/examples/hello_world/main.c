@@ -14,7 +14,16 @@
 
 int main(void)
 {
+    int a = 10;
+    int b = 20;
+
     printf("Hello World!\n");
+
+    /* simple calculation */
+    printf("a + b = %d\n", a + b);
+    printf("a * b = %d\n", a * b);
+    printf("a / b = %d\n", a / b);
+    printf("a %% b = %d\n", a % b);
 
     return 0;
 }
