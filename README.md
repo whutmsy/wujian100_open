@@ -28,21 +28,16 @@
 # Get ready for simulation
     the simulation flow only supports QuestaSim, everything lives in tools/:
       |--run_case       // build a case and run it, python, needs no make and no posix shell
-      |--setup.sh       // bash: export TOOL_PATH and the QuestaSim vlog/vlib/vsim path
-      |--setup.ps1      // same thing for PowerShell
       |--Srec2vmem.py   // srec -> test.pat converter used by the firmware build
-    run_case finds the riscv toolchain and QuestaSim by itself, so sourcing the
-    setup script is optional - it only helps when they sit somewhere unusual.
+    run_case finds the riscv toolchain and QuestaSim by itself, so there is no
+    setup script to source - it works from bash, PowerShell and cmd alike.
+    when they sit somewhere unusual, either set TOOL_PATH / QUESTA_HOME, pass
+    -toolchain <dir>, or edit DEFAULT_TOOLCHAIN / DEFAULT_QUESTA in tools/run_case.
     1. cd wujian100_open/workdir
     2. bash:        ../tools/run_case ../case/timer/timer_test.c
        powershell:  python ..\tools\run_case ..\case\timer\timer_test.c
        cmd:         python ..\tools\run_case ..\case\timer\timer_test.c
     3. add -gui to open the GUI with all waves added
-    using the setup scripts (only needed for a non-default install path):
-       bash:        source tools/setup.sh          // `source` is a bash builtin
-       powershell:  . .\tools\setup.ps1            // the leading dot is the equivalent
-       cmd:         no equivalent, cmd cannot keep env changes - edit the defaults
-                    in tools/run_case (DEFAULT_TOOLCHAIN / DEFAULT_QUESTA) instead
     options:
        -toolchain <dir>   riscv toolchain root, default D:/workbuddy/work/riscv-toolchain
        -pat <test.pat>    run a prebuilt image and skip the firmware build

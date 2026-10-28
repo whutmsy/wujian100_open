@@ -128,8 +128,9 @@ def prepare_env():
     enough (CreateProcess does not search the child environment).  So PATH is
     modified in place, and the resulting environment is handed to every child.
 
-    This is what makes `source setup.sh` unnecessary: run_case works from
-    cmd.exe and PowerShell too, as long as QuestaSim sits in a default place.
+    There is no setup script: run_case prepares its own environment, so it
+    works from cmd.exe and PowerShell too, as long as QuestaSim sits in a
+    default place or $QUESTA_HOME / -toolchain points at it.
     """
     global ENV
     qbin = find_questa()
