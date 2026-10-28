@@ -16,3 +16,4 @@ rtl_gpr.log
 work/
 __pycache__/
 *.pyc
+.workbuddy/*
