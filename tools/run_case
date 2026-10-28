@@ -59,6 +59,19 @@ DEFAULT_TOOLCHAIN = [
     Path("/opt/riscv"),
 ]
 
+# where QuestaSim usually lives: $QUESTA_HOME  ->  these defaults
+DEFAULT_QUESTA = [
+    Path("D:/questasim64_10.6c"),
+    Path("C:/questasim64_10.6c"),
+    Path("D:/questasim"),
+    Path("C:/questasim"),
+    Path("/opt/questa"),
+    Path("/opt/modelsim"),
+]
+
+# child processes get this environment (PATH + the questasim bin dir)
+ENV = None
+
 # cases that need an extra verilog stimulus file next to the source
 STIM_KEY_S = ("had", "gpio", "connect", "pulse", "lpmd", "int_ack", "bist")
 
@@ -76,14 +89,61 @@ def die(msg, code=1):
 def sh(cmd, cwd=None, check=True):
     """run a command, echo it, abort on failure unless check=False"""
     log("+ " + " ".join(str(c) for c in cmd))
-    rc = subprocess.run([str(c) for c in cmd], cwd=cwd).returncode
+    rc = subprocess.run([str(c) for c in cmd], cwd=cwd, env=ENV).returncode
     if check and rc != 0:
         die("command failed (rc=%d): %s" % (rc, " ".join(str(c) for c in cmd)))
     return rc
 
 
+def _vsim_in(directory):
+    """return the vsim executable inside directory, or None"""
+    for name in ("vsim.exe", "vsim", "vsim.bat"):
+        cand = directory / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def find_questa():
+    """locate the QuestaSim bin directory (win64 / win32 / bin)"""
+    cands = []
+    if os.environ.get("QUESTA_HOME"):
+        cands.append(norm_path(os.environ["QUESTA_HOME"]))
+    cands += DEFAULT_QUESTA
+    for root in cands:
+        for sub in ("win64", "win32", "bin", ""):
+            d = root / sub if sub else root
+            if d.is_dir() and _vsim_in(d):
+                return d
+    # maybe it is already on PATH
+    found = shutil.which("vsim")
+    return Path(found).parent if found else None
+
+
+def prepare_env():
+    """put the questasim bin directory on PATH.
+
+    vlog / vsim / vlib are looked up by name, and on windows the executable
+    search uses the PATH of *this* process - passing env= to subprocess is not
+    enough (CreateProcess does not search the child environment).  So PATH is
+    modified in place, and the resulting environment is handed to every child.
+
+    This is what makes `source setup.sh` unnecessary: run_case works from
+    cmd.exe and PowerShell too, as long as QuestaSim sits in a default place.
+    """
+    global ENV
+    qbin = find_questa()
+    if qbin is not None:
+        path = os.environ.get("PATH", "")
+        if str(qbin).lower() not in path.lower():
+            os.environ["PATH"] = str(qbin) + os.pathsep + path
+        os.environ["QUESTA_HOME"] = str(qbin.parent)
+    ENV = os.environ.copy()
+    return qbin
+
+
 def tool_exists(name):
-    return shutil.which(name) is not None
+    return shutil.which(name, path=ENV["PATH"] if ENV else None) is not None
 
 
 def norm_path(p):
@@ -130,7 +190,7 @@ def probe_toolchain(gcc):
     """return (ok, first line of --version)"""
     try:
         res = subprocess.run([str(gcc), "--version"], capture_output=True,
-                             text=True, timeout=30)
+                             text=True, timeout=30, env=ENV)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
     out = (res.stdout or "") + (res.stderr or "")
@@ -273,7 +333,7 @@ def build_firmware(case_name, pat_file, toolchain):
         res = subprocess.run([str(tool_of(root, "riscv64-unknown-elf-objdump")),
                               "-S", "-Mnumeric", elf],
                              cwd=WORKDIR, stdout=fh, stderr=subprocess.PIPE,
-                             text=True)
+                             text=True, env=ENV)
     if res.returncode != 0:
         die("objdump failed: %s" % (res.stderr or "").strip())
 
@@ -384,6 +444,9 @@ def main():
         if not pat_file.is_absolute():
             pat_file = (caller_cwd / pat_file).resolve()
 
+    qbin = prepare_env()
+    log("questasim : %s" % (qbin or "<not found, pass it through PATH>"))
+
     t0 = time.time()
     clean_workdir()
 
@@ -403,8 +466,9 @@ def main():
 
     build_firmware(case_name, pat_file, opts.toolchain)
 
-    if not tool_exists("vsim"):
-        die("'vsim' not found in PATH, source tools/setup.sh first")
+    if qbin is None:
+        die("vsim not found - QuestaSim is not in a default location and not "
+            "on PATH; set QUESTA_HOME or add its win64 directory to PATH")
 
     log("\nStep4 (Run simulation with QuestaSim) ...")
     run_questa(opts)
