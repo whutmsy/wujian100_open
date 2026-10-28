@@ -306,7 +306,11 @@ endtask
 
 reg[31:0] pc_data_out;
 reg[31:0] psr_data_out;
-static integer FILE;
+`ifdef QUESTA
+  integer FILE;
+`else
+  static integer FILE;
+`endif
 initial
   begin
     @(posedge `TB_MODULE.PAD_MCURST);

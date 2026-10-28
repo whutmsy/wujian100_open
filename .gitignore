@@ -1,0 +1,18 @@
+# run_case writes the case sources and all build/sim artifacts into workdir,
+# only the README is tracked
+workdir/*
+!workdir/README
+
+# simulation results are regenerated on every run
+regress/regress_result/*.report
+regress/regress_result/*.log
+
+# simulator / waveform droppings
+*.vcd
+*.wlf
+*.vstf
+transcript
+rtl_gpr.log
+work/
+__pycache__/
+*.pyc

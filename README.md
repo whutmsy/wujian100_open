@@ -2,7 +2,7 @@
     wujian100_open is a MCU base SoC. We can simulate by EDA tools and emulate by FPGA. Also we can develop the IPs and software in this platform. We wish more and more developers building the open MCU ecosystem with T-Head. IC design and development should be faster simpler and more reliable
     Directory Structure
     |--Project                //open source project work directory  
-      |--riscv_toolchain      //tool chain install directory download from t-head.cn
+      |--riscv-toolchain      //tool chain install directory download from t-head.cn
       |--wujian100_open       //wujian100_open project get from github
         |--case               //test case example for simulation
         |--doc                //wujian100_open user guide
@@ -21,18 +21,28 @@
     2. cd Project
     3. git clone https://github.com/T-head-Semi/wujian100_open.git or git clone git@github.com:T-head-Semi/wujian100_open.git
 # Download C/C++ Compiler
-    1. prepare a tool chain install directory named 'riscv_toolchain'  // use the c shell command like 'mkdir riscv_toolchain'
+    1. prepare a tool chain install directory named 'riscv-toolchain'  // use the c shell command like 'mkdir riscv-toolchain'
     2. download the tool chain from the url https://occ.t-head.cn/community/download?id=3913221581316624384
-    3. install the tool chain to the riscv_toolchain dirctory
-# Get open source EDA tools
-    centos7/rhel7:  sudo yum install iverilog verilator gtkwave
-    ubuntu/debian:  sudo apt-get install iverilog verilator gtkwave
+       a windows host needs the mingw build (riscv64-elf-mingw-*.tar.gz), the linux ELF build will not run there
+    3. install the tool chain to the riscv-toolchain directory
 # Get ready for simulation
+    the simulation flow only supports QuestaSim, everything lives in tools/:
+      |--run_case       // build a case and run it, python, needs no make and no posix shell
+      |--setup.sh       // export TOOL_PATH and the QuestaSim vlog/vlib/vsim path
+      |--Srec2vmem.py   // srec -> test.pat converter used by the firmware build
     1. cd wujian100_open/tools
-    2. vim setup.csh then add the vcs path and license
-    3. source setup.csh         //if not success you can touch a new file named setup.csh and copy the content to the new file. then source the new file
+    2. vim setup.sh then edit TOOL_PATH and QUESTA_HOME if they are not in the default location
+    3. source setup.sh
     4. cd wujian100_open/workdir
-    5. if you want to use iverilog as simulation tool please execute the command '../tools/run_case -sim_tool iverilog ../case/timer/timer_test.c' or if you want to use vcs as simulation tool please execute the command '../tools/run_case -sim_tool vcs ../case/timer/timer_test.c'
+    5. ../tools/run_case ../case/timer/timer_test.c          // batch run
+       ../tools/run_case -gui ../case/timer/timer_test.c     // open the GUI with all waves added
+    options:
+       -toolchain <dir>   riscv toolchain root, default D:/workbuddy/work/riscv-toolchain
+       -pat <test.pat>    run a prebuilt image and skip the firmware build
+       -tmax <time>       simulation time limit, default 10ms, stops a case that waits forever
+       -nodump / -nomnt   disable the waveform dump / the bus monitor
+    the result goes to workdir/run_case.report and is copied to regress/regress_result/<case>.report
+
 # Get ready for FPGA bit generation
     1. make sure you have the synplify and license
     2. cd wujian100_open/fpga/synplify

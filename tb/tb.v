@@ -28,6 +28,8 @@ module wujian100_open_tb ();
 
 `ifdef iverilog
   integer FILE;
+`elsif QUESTA
+  integer FILE;
 `else
   static integer FILE;
 `endif
@@ -260,6 +262,8 @@ integer k;
   reg [31:0] one_word;
 `ifdef iverilog
   reg [31:0]  temp_mem[16384];
+`elsif QUESTA
+  reg [31:0]  temp_mem[0:16383];
 `else
   reg [31:0]  temp_mem[integer];
 `endif

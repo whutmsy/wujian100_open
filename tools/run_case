@@ -1,5 +1,5 @@
-#!/usr/bin/perl -w
-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 #Copyright (c) 2019 Alibaba Group Holding Limited
 #
 #Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -8,264 +8,419 @@
 #
 #THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-use Getopt::Long;
-    $Getopt::Long::ignorecase = 0;
-use File::Copy;
-use Cwd;
-use FileHandle;
-use File::Basename;
-use Term::ANSIColor;
-use strict;
-no strict 'refs';
-my $wujian100_open_PATH = `pwd`;
-chomp($wujian100_open_PATH);
-$wujian100_open_PATH =~ s/wujian100_open.*/wujian100_open\//;
+"""run_case - build a wujian100_open case and run it on QuestaSim.
 
-my $com_dir = `pwd`;
-chomp($com_dir);
-my $work;
+QuestaSim-only flow, replacement for the original perl script (vcs) and the
+iverilog/vcs branches of the earlier python port:
 
-$work = "$wujian100_open_PATH\/workdir";
-chdir($work);
-my @file2del;
-my $dir = `pwd`;
-if($dir =~ /workdir$/) {
-	@file2del = qx(ls);
-	foreach(@file2del){
-		chomp($_);
-		if("$_" ne "CVS"){
-			!system("rm -rf $_") or die "can't rm";
-		}
-	}
-}
-else {
-	print "Error when change directory to workdir!";
-	exit(1);
-}
-print "\nStep1 (Remove all things in current 'workdir') is finished!\n";
+    step1  clean workdir
+    step2  copy the case sources into workdir
+    step3  build the firmware (riscv gcc -> elf -> srec -> test.pat)
+    step4  vlib / vlog / vsim
 
-my %Opt;
-if(!&GetOptions
-	(\%Opt,
-		'--h',	                #Print help message
-		'--nodump',             #Disable the waveform dump function in VCS simulation
-		'--sim_tool:s',         #Specify the simulation tools, support vcs and iverilog
-		'--nomnt'))              #disable mnt module when running tb
-{
-	&print_usage();
-	exit(1);
-}
+The firmware is built by calling the riscv toolchain directly instead of
+going through make, so the flow needs nothing but python, the toolchain and
+QuestaSim - no make, no POSIX shell.
 
+usage:
+    run_case [-pat <test.pat>] [-toolchain <dir>] [-tmax 10ms]
+             [-gui] [-nodump] [-nomnt] <case.c>
+"""
 
-if($Opt{'h'}) {
-	&print_usage();
-	exit(1);
-}
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
 
+# ---------------------------------------------------------------- constants
+ROOT = Path(__file__).resolve().parent.parent
+WORKDIR = ROOT / "workdir"
+REGRESS = ROOT / "regress" / "regress_result"
 
+# e902m = machine mode core, the only core these cases are built for
+CPU_MODEL = "e902"
+CPU_MAKE = "e902m"
+DATA_ADDR = "0x20000000"
+
+TOP = "wujian100_open_tb"
+SOC_LIST = ["../soc/wujian100_open_lib_for_iverilog.filelist",
+            "../soc/wujian100_open_syn_for_iverilog.filelist"]
+TB_SRC = ["../tb/tb.v", "../tb/busmnt.v", "../tb/virtual_counter.v"]
+
+# where the riscv toolchain usually lives, in order of preference:
+#   -toolchain <path>  ->  $TOOL_PATH  ->  these defaults
+DEFAULT_TOOLCHAIN = [
+    Path("D:/workbuddy/work/riscv-toolchain"),
+    ROOT.parent / "riscv-toolchain",
+    Path("/opt/riscv"),
+]
+
+# cases that need an extra verilog stimulus file next to the source
+STIM_KEY_S = ("had", "gpio", "connect", "pulse", "lpmd", "int_ack", "bist")
 
 
-my $s_vcs = 0;
-my $s_iverilog = 0;
-if(!defined($Opt{'sim_tool'}) || ($Opt{'sim_tool'} eq "vcs")){
-	$s_vcs = 1;
-}elsif($Opt{'sim_tool'} eq "iverilog"){
-	$s_iverilog = 1;
-}
-if(!$s_vcs && !$s_iverilog){
-	print "Invalid simulation tool! Support vcs or iverilog.\n";
-	exit(1);
-}
+# ------------------------------------------------------------------- helper
+def log(msg=""):
+    print(msg, flush=True)
 
 
-
-my $dump_sim = "";
-if(defined($Opt{'nodump'})){
-	$dump_sim = "+define+NO_DUMP";
-}
+def die(msg, code=1):
+    print("\n[run_case] ERROR: " + msg, file=sys.stderr, flush=True)
+    sys.exit(code)
 
 
-my $s_nomnt = 0;
-if(defined($Opt{'nomnt'})){
-	$s_nomnt = 1;
-}
-my $mnt_sim = "";
-if ($s_nomnt == 1) {
-	$mnt_sim = "+define+NO_MONITOR";
-}
-
-my $cpu_model = "e902";
-
-my $hgpr= "";
-my $mad = 1;
-
-my $cpu_model_make;
-my $dahb_lite = 0;
+def sh(cmd, cwd=None, check=True):
+    """run a command, echo it, abort on failure unless check=False"""
+    log("+ " + " ".join(str(c) for c in cmd))
+    rc = subprocess.run([str(c) for c in cmd], cwd=cwd).returncode
+    if check and rc != 0:
+        die("command failed (rc=%d): %s" % (rc, " ".join(str(c) for c in cmd)))
+    return rc
 
 
-if("$cpu_model" eq "e902"){
-	my $temp_line;
-	my $flag_902 = 1;
-	my $bctm_902 = 0;
-	my $iabh_lite_902 = 1;
-	my $dabh_lite_902 = 0;
-           $cpu_model_make = "e902m";
-}
-
-chdir($com_dir);
-my $path;
-my $case;
-my $case_file;
-my $case_make;
-my $had_v;
-my @file;
-foreach(@ARGV){
-	if(/(.*\/)(.*)/){
-		$case_file = $_;
-		$path = $1;
-		$case = $2;
-	}else{
-		$case_file = $_;
-		$case = $_;
-		chomp($path = `pwd`);
-	}
+def tool_exists(name):
+    return shutil.which(name) is not None
 
 
-	if($case =~ /(.*)\.s/){
-		$case_make = $1;
-		!system("cp $case_file $wujian100_open_PATH/workdir") or die "can't copy $case_file";
+def norm_path(p):
+    """accept msys / git-bash / wsl style paths on windows.
 
-		if(($case =~ /.*had.*\.s/) or ($case =~ /.*gpio.*\.s/) or ($case =~ /.*connect.*\.s/) or ($case =~ /.*pulse.*\.s/) or ($case =~ /.*lpmd.*\.s/) or ($case =~ /.*int_ack.*\.s/) or ($case =~ /.*bist.*\.s/) or ($case =~ /.*e902.*nest.*\.s/)){
-			$case_file =~ s/\.s/\.v/;
-			$had_v = $case;
-			$had_v =~ s/\.s/\.v/;
-			!system("cp $case_file $wujian100_open_PATH/workdir") or die "can't copy $case_file";
-		}
-	}
-
-
-	if($case =~ /(.*)\.c/){
-		$case_make = $1;
-		chomp(@file = `ls $path`);
-		foreach(@file){
-			if(/CVS/){
-				undef $_;
-			}else{
-				my $file = "$path"."\/"."$_";
-				print "$file\n";
-				!system("cp $file $wujian100_open_PATH/workdir") or die "can't copy $file";
-				if(($case =~ /.*had.*\.c/) or ($case =~ /.*gpio.*\.c/) or ($case =~ /.*pwm.*\.c/) or ($case =~ /.*map_test.*\.c/)  or ($case =~ /.*usi.*\.c/)){
-					$case_file =~ s/\.c/\.v/;
-					$had_v = $case;
-					$had_v =~ s/\.c/\.v/;
-					!system("cp $case_file $wujian100_open_PATH/workdir") or die "can't copy $case_file";
-				}	
-			}
-			if($_=~/int_ack\w+\.v/){
-			  $had_v=$_;
-                          print "########$had_v#########\n";	
-			}
-		}
-		!system("cp $wujian100_open_PATH/lib/clib/*.h $wujian100_open_PATH/workdir") or die "can't copy clib program";
-		!system("cp $wujian100_open_PATH/lib/clib/*.c $wujian100_open_PATH/workdir") or die "can't copy clib program";
-        !system("cp $wujian100_open_PATH/lib/newlib_wrap/*.c $wujian100_open_PATH/workdir") or die "can't copy clib program";
-	}
-}
-print "\nStep2 (Process the command line arguments) is finished!\n";
+        /d/foo       -> D:/foo
+        /mnt/d/foo   -> D:/foo     (wsl path, handy when the same command
+                                    line is used from both shells)
+    """
+    s = str(p)
+    if os.name == "nt" and s.startswith("/"):
+        if len(s) > 6 and s[1:5].lower() == "mnt/" and s[5].isalpha() and s[6] == "/":
+            s = s[5].upper() + ":" + s[6:]
+        elif len(s) > 2 and s[1].isalpha() and s[2] == "/":
+            s = s[1].upper() + ":" + s[2:]
+    return Path(s)
 
 
-chdir($work);
-$_ = $cpu_model;
-
-if(/e902/){
-	!system("cp ../lib/Makefile ./Makefile") or die "cant't copy";
-        !system("cp ../lib/crt0.s ./crt0.s") or die "cant't copy";
-	!system("cp ../lib/linker.lcf ./linker.lcf") or die "cant't copy";
-}
-else{
-	print "Invalid CPU model!";
-	exit(1);
-}
-
-my $data_addr = 0;
-
-if($dahb_lite){
-        $data_addr = 20000000;# noted that it is hex format
-}
-else{
-        $data_addr = 20000000;
-}
-!system("sed -i 's/DATA_BADDR/0x$data_addr/g' linker.lcf") or die "cant't replace";
+def find_toolchain(explicit):
+    """locate riscv64-unknown-elf-gcc, return (root, gcc)"""
+    cands = []
+    if explicit:
+        cands.append(norm_path(explicit))
+    if os.environ.get("TOOL_PATH"):
+        cands.append(norm_path(os.environ["TOOL_PATH"]))
+    cands += DEFAULT_TOOLCHAIN
+    for root in cands:
+        for name in ("riscv64-unknown-elf-gcc.exe", "riscv64-unknown-elf-gcc"):
+            gcc = root / "bin" / name
+            if gcc.is_file():
+                return root, gcc
+    return None, None
 
 
-!system("touch run_case.report") or die "can't touch";
-`printf "NOT RUN">run_case.report`;
-
-!system("mkdir ../regress/regress_result");
-!system("cp run_case.report ../regress/regress_result/$case_make\.report") or die "can't copy";
-
-
-!system("make clean; make all CPU=$cpu_model_make ENDIAN_MODE=little-endian FILE=$case_make HGPR=$hgpr") or die "can't make";
-print "make clean; make all CPU=$cpu_model_make ENDIAN_MODE=little-endian FILE=$case_make HGPR=$hgpr\n";
-print "\nStep3 (Make) is finished!\n";
+def tool_of(root, name):
+    """resolve <root>/bin/<name>[.exe]"""
+    for cand in (root / "bin" / (name + ".exe"), root / "bin" / name):
+        if cand.is_file():
+            return cand
+    die("missing tool: %s under %s/bin" % (name, root))
 
 
-my $g_vlib_path;
-{
-  $g_vlib_path="+libext+.v+.sv+.inc+.h -R";
-}
-$g_vlib_path =   $g_vlib_path
-
- 		 ." -v ../tb/tb.v"
-		 ." -v ../tb/busmnt.v"
- 		 ." -v ../tb/virtual_counter.v"
-		 ." -y ../tb/"
-		 ." -v ../soc/sim_lib/*.v"
-                 ." -v ../soc/*.v";
-my $vcs_incdir = " +incdir+../workdir"
-
-		        ."+../soc/params"
-                        ."+../tb";
-
-my  $g_novas_pli;
-my  $PLItab;
+def probe_toolchain(gcc):
+    """return (ok, first line of --version)"""
+    try:
+        res = subprocess.run([str(gcc), "--version"], capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    out = (res.stdout or "") + (res.stderr or "")
+    if res.returncode != 0:
+        first = out.strip().splitlines()[0] if out.strip() else "exit %d" % res.returncode
+        return False, first
+    return True, out.splitlines()[0] if out.strip() else "ok"
 
 
-
-my $top_mod;
-
-  $top_mod = "$wujian100_open_PATH/tb/tb.v ";
-if($s_vcs) {
-	!system("vcs +v2k -Mupdate -sverilog   $mnt_sim $dump_sim +nospecify +notimingchecks -timescale=1ns/100ps  $top_mod   $wujian100_open_PATH/workdir/$had_v $vcs_incdir $g_vlib_path  $PLItab  ") or die "can't run VCS";}
-elsif($s_iverilog){
-	!system("iverilog -o test.vvp -Diverilog=1 -g2012 ../tb/busmnt.v  ../tb/tb.v ../tb/virtual_counter.v -f ../soc/wujian100_open_syn_for_iverilog.filelist -f ../soc/wujian100_open_lib_for_iverilog.filelist $wujian100_open_PATH/workdir/$had_v") or die "can't run iverilog";
-        !system("vvp test.vvp") or die "can't run vvp";
-}
-else{
-  exit(1);
-}
-print "\nStep4 (Run simulation) is finished\n";
-
-!system("cp run_case.report ../regress/regress_result/$case_make\.report") or die "can't copy";
-
+# --------------------------------------------------------------- case copy
+def clean_workdir():
+    if WORKDIR.name != "workdir" or WORKDIR.parent != ROOT:
+        die("refuse to clean %s" % WORKDIR)
+    for entry in WORKDIR.iterdir():
+        if entry.name in ("README", "CVS", ".gitignore"):
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+    log("\nStep1 (Remove all things in current 'workdir') is finished!")
 
 
-sub print_usage {
-	print << "UseOfrun_case";
-Usage: run_case [options] case_name
-	[option] =
-		[-h]: 
-			Print run_case user guider on screen
-		[-nodump]:
-			Disable the waveform dump function in VCS simulation. If not specified, dump waveform function is enabled
-[-sim_tool vcs|iverilog]:      
-        		Specify the simulation tools, support vcs and iverilog
-		[-nomnt]:
-			Disable the monitor module when running tb, monitor is enabled without this option
-Example:
-	../tools/run_case ../case/addr_map/map_test.c
-this command means running case at workdir/ dirctory ,the CPU is RTL code, dumpon the wave from the 0 cycle, and monitor is disabled in tb.
+def copy_file(src, dst_dir):
+    dst = Path(dst_dir) / Path(src).name
+    try:
+        shutil.copy2(src, dst)
+    except OSError as exc:
+        die("can't copy %s (%s)" % (src, exc))
+    return dst
 
-UseOfrun_case
-   print "\f";
-}
+
+def copy_case(case_path):
+    """copy the case sources into workdir, return (case name, stim list)"""
+    if not case_path.is_file():
+        die("case file not found: %s" % case_path)
+    name = case_path.name
+    stem = case_path.stem
+    suffix = case_path.suffix.lower()
+    stims = []
+
+    if suffix == ".s":
+        copy_file(case_path, WORKDIR)
+        low = name.lower()
+        if any(k in low for k in STIM_KEY_S) or "nest" in low:
+            v_file = case_path.with_suffix(".v")
+            if v_file.is_file():
+                copy_file(v_file, WORKDIR)
+                stims.append("../workdir/" + v_file.name)
+    elif suffix == ".c":
+        for entry in sorted(case_path.parent.iterdir()):
+            if entry.name == "CVS" or not entry.is_file():
+                continue
+            copy_file(entry, WORKDIR)
+            if entry.suffix.lower() == ".v":
+                stims.append("../workdir/" + entry.name)
+        # minimal c library needed by the case
+        for pattern in ("*.h", "*.c"):
+            for src in sorted((ROOT / "lib" / "clib").glob(pattern)):
+                copy_file(src, WORKDIR)
+        for src in sorted((ROOT / "lib" / "newlib_wrap").glob("*.c")):
+            copy_file(src, WORKDIR)
+    else:
+        die("unsupported case type: %s (expect .c or .s)" % name)
+
+    log("\nStep2 (Process the command line arguments) is finished!")
+    return stem, stims
+
+
+def prepare_build():
+    """copy the makefile / linker script / crt0 into workdir"""
+    for src in ("Makefile", "crt0.s", "linker.lcf"):
+        copy_file(ROOT / "lib" / src, WORKDIR)
+    linker = WORKDIR / "linker.lcf"
+    linker.write_text(linker.read_text(errors="replace").replace(
+        "DATA_BADDR", DATA_ADDR), errors="replace")
+
+
+# -------------------------------------------------------------- firmware
+def build_firmware(case_name, pat_file, toolchain):
+    if pat_file is not None:
+        dst = WORKDIR / "test.pat"
+        try:
+            shutil.copy2(pat_file, dst)
+        except OSError as exc:
+            die("can't copy %s (%s)" % (pat_file, exc))
+        log("\nStep3 (Skip firmware build, use prebuilt %s) is finished!" % dst)
+        return
+
+    root, gcc = find_toolchain(toolchain)
+    if gcc is None:
+        die("riscv64-unknown-elf-gcc not found, pass -toolchain <dir> or set TOOL_PATH")
+    ok, desc = probe_toolchain(gcc)
+    if not ok:
+        die("can't execute %s\n  -> %s\n"
+            "  This looks like a linux ELF being run on windows; use the\n"
+            "  T-HEAD win32/win64 build of the toolchain." % (gcc, desc))
+    log("toolchain : %s" % desc)
+    log("toolchain : %s" % root)
+
+    march, mabi = ("rv32emc", "ilp32e") if "e902m" in CPU_MAKE else ("rv32ec", "ilp32e")
+    cflags = ["-march=" + march, "-mabi=" + mabi,
+              "-D" + CPU_MODEL, "-Wa,--defsym=%s=1" % CPU_MODEL,
+              "-O3", "-funroll-all-loops", "-fgcse-sm", "-finline-limit=500",
+              "-fno-schedule-insns", "-ffunction-sections", "-fdata-sections"]
+
+    for stale in list(WORKDIR.glob("*.pat")) + list(WORKDIR.glob("*.elf")) \
+            + list(WORKDIR.glob("*.o")) + list(WORKDIR.glob("*.hex")) \
+            + list(WORKDIR.glob("*.obj")):
+        stale.unlink()
+
+    # NB: windows filesystems are case insensitive, so "*.S" also matches
+    # "crt0.s" - dedup by lower-cased name to avoid compiling it twice
+    seen = {}
+    for pattern in ("*.S", "*.s", "*.c"):
+        for src in sorted(WORKDIR.glob(pattern)):
+            seen.setdefault(src.name.lower(), src)
+    sources = [seen[k] for k in sorted(seen)]
+    if not sources:
+        die("no source files found in %s" % WORKDIR)
+
+    objects = []
+    for src in sources:
+        sh([gcc, "-c"] + cflags + ["-o", src.stem + ".o", src.name], cwd=WORKDIR)
+        objects.append(src.stem + ".o")
+    # crt0 first: the linker script expands crt0.o(.text) at 0x0
+    objects.sort(key=lambda n: (not n.startswith("crt0"), n))
+
+    elf = case_name + ".elf"
+    sh([gcc, "-Tlinker.lcf", "-nostartfiles", "-march=" + march,
+        "-mabi=" + mabi, "-lc", "-lgcc"] + objects + ["-o", elf, "-lm"],
+       cwd=WORKDIR)
+
+    # keep the large disassembly listing out of the console
+    with open(WORKDIR / (case_name + ".obj"), "w") as fh:
+        log("+ objdump -S -Mnumeric %s > %s.obj" % (elf, case_name))
+        res = subprocess.run([str(tool_of(root, "riscv64-unknown-elf-objdump")),
+                              "-S", "-Mnumeric", elf],
+                             cwd=WORKDIR, stdout=fh, stderr=subprocess.PIPE,
+                             text=True)
+    if res.returncode != 0:
+        die("objdump failed: %s" % (res.stderr or "").strip())
+
+    sh([tool_of(root, "riscv64-unknown-elf-objcopy"),
+        "-O", "srec", elf, case_name + ".hex"], cwd=WORKDIR)
+    sh([sys.executable, str(ROOT / "tools" / "Srec2vmem.py"),
+        "-i", case_name + ".hex", "-o", "test.pat"], cwd=WORKDIR)
+
+    if not (WORKDIR / "test.pat").is_file():
+        die("build finished but test.pat was not generated")
+    log("\nStep3 (Build firmware) is finished!")
+
+
+# ---------------------------------------------------------------- questasim
+def stim_top_modules(stims):
+    """module names declared inside the case stimulus files.
+
+    A case such as gpio ships gpio_test.v, a stand-alone module that forces
+    the pads.  QuestaSim only elaborates the tops named on the command line,
+    so those modules have to be passed to vsim explicitly.
+    """
+    names = []
+    for rel in stims:
+        path = WORKDIR / Path(rel).name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r"(?m)^\s*module\s+([A-Za-z_]\w*)", text):
+            if match.group(1) not in names:
+                names.append(match.group(1))
+    return names
+
+
+def run_questa(opts):
+    # drop the previous library through QuestaSim instead of deleting the
+    # directory, vdel is the only reliable way to clear a compiled library
+    if (WORKDIR / "work").is_dir():
+        sh(["vdel", "-all"], cwd=WORKDIR, check=False)
+    sh(["vlib", "work"], cwd=WORKDIR)
+
+    vlog = ["vlog", "-work", "work", "-timescale", "1ns/100ps", "-quiet",
+            "+define+QUESTA"]
+    if opts.nodump:
+        vlog.append("+define+NO_DUMP")
+    if opts.nomnt:
+        vlog.append("+define+NO_MONITOR")
+    vlog += ["+incdir+../workdir", "+incdir+../soc/params", "+incdir+../tb"]
+    # -mfcu keeps the whole design in one compilation unit so the macros
+    # defined in tb.v (`TB_MODULE and friends) are visible to the stimulus
+    # modules shipped with a case
+    vlog.append("-mfcu")
+    for lst in SOC_LIST:
+        vlog += ["-f", lst]
+    vlog += TB_SRC + opts.stims
+    sh(vlog, cwd=WORKDIR)
+
+    tops = [TOP] + stim_top_modules(opts.stims)
+
+    if opts.gui:
+        do_lines = ["add wave -r /*", "run -all"]
+    else:
+        # a case waiting for a stimulus that never arrives would hang forever,
+        # so cap the run time and leave the report as NOT RUN
+        do_lines = ["run %s" % opts.tmax, "quit -f"]
+    (WORKDIR / "run_all.do").write_text("\n".join(do_lines) + "\n")
+
+    cmd = ["vsim"]
+    cmd += ["-gui"] if opts.gui else ["-c", "-quiet"]
+    cmd += ["-voptargs=+acc", "-do", "run_all.do"] + tops
+    sh(cmd, cwd=WORKDIR)
+
+
+# ------------------------------------------------------------------- main
+def main():
+    ap = argparse.ArgumentParser(
+        prog="run_case",
+        description="build a wujian100_open case and run it on QuestaSim",
+        usage="run_case [options] case_file")
+    ap.add_argument("case", nargs="?", help="case source (.c or .s)")
+    ap.add_argument("-pat", "--pat", default=None,
+                    help="use a prebuilt test.pat and skip the firmware build")
+    ap.add_argument("-toolchain", "--toolchain", default=None,
+                    help="riscv toolchain root, default: $TOOL_PATH or "
+                         "D:/workbuddy/work/riscv-toolchain")
+    ap.add_argument("-tmax", "--tmax", default="10ms",
+                    help="simulation time limit, default 10ms - stops a case "
+                         "that waits for a stimulus forever")
+    ap.add_argument("-nodump", "--nodump", action="store_true",
+                    help="disable the waveform dump")
+    ap.add_argument("-nomnt", "--nomnt", action="store_true",
+                    help="disable the monitor module of the testbench")
+    ap.add_argument("-gui", "--gui", action="store_true",
+                    help="open the GUI and dump all waves")
+    opts = ap.parse_args()
+    opts.stims = []
+
+    caller_cwd = Path(os.getcwd())
+    if opts.case is None and opts.pat is None:
+        ap.print_usage()
+        die("no case file given")
+
+    pat_file = None
+    if opts.pat:
+        pat_file = norm_path(opts.pat)
+        if not pat_file.is_absolute():
+            pat_file = (caller_cwd / pat_file).resolve()
+
+    t0 = time.time()
+    clean_workdir()
+
+    if opts.case:
+        case_path = norm_path(opts.case)
+        if not case_path.is_absolute():
+            case_path = (caller_cwd / case_path).resolve()
+        case_name, opts.stims = copy_case(case_path)
+    else:
+        case_name = pat_file.stem
+
+    prepare_build()
+
+    REGRESS.mkdir(parents=True, exist_ok=True)
+    report = WORKDIR / "run_case.report"
+    report.write_text("NOT RUN")
+
+    build_firmware(case_name, pat_file, opts.toolchain)
+
+    if not tool_exists("vsim"):
+        die("'vsim' not found in PATH, source tools/setup.sh first")
+
+    log("\nStep4 (Run simulation with QuestaSim) ...")
+    run_questa(opts)
+    log("Step4 (Run simulation) is finished!")
+
+    shutil.copy2(report, REGRESS / (case_name + ".report"))
+    result = report.read_text(errors="replace").strip()
+    log("\n==================== summary ====================")
+    log("  simulator : QuestaSim")
+    log("  case      : %s" % case_name)
+    log("  result    : %s" % (result if result else "NOT RUN"))
+    log("  report    : %s" % (REGRESS / (case_name + ".report")))
+    log("  elapsed   : %.1f s" % (time.time() - t0))
+    log("=================================================")
+    return 0 if result == "TEST PASS" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

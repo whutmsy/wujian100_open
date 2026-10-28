@@ -27,6 +27,8 @@ wire            sysclk;
 
 `ifdef iverilog
   integer FILE;
+`elsif QUESTA
+  integer FILE;
 `else
   static integer FILE;
 `endif
