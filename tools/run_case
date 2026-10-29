@@ -277,10 +277,13 @@ def prepare_build():
 def build_firmware(case_name, pat_file, toolchain):
     if pat_file is not None:
         dst = WORKDIR / "test.pat"
-        try:
-            shutil.copy2(pat_file, dst)
-        except OSError as exc:
-            die("can't copy %s (%s)" % (pat_file, exc))
+        # the pat may already sit in workdir (restored after step1), copying a
+        # file onto itself fails on windows
+        if Path(pat_file).resolve() != dst.resolve():
+            try:
+                shutil.copy2(pat_file, dst)
+            except OSError as exc:
+                die("can't copy %s (%s)" % (pat_file, exc))
         log("\nStep3 (Skip firmware build, use prebuilt %s) is finished!" % dst)
         return
 
@@ -440,16 +443,26 @@ def main():
         die("no case file given")
 
     pat_file = None
+    pat_bytes = None
     if opts.pat:
         pat_file = norm_path(opts.pat)
         if not pat_file.is_absolute():
             pat_file = (caller_cwd / pat_file).resolve()
+        if not pat_file.is_file():
+            die("pat file not found: %s" % pat_file)
+        # a pat living inside workdir would be wiped by step1, keep it in memory
+        if WORKDIR.resolve() in pat_file.parents:
+            pat_bytes = pat_file.read_bytes()
 
     qbin = prepare_env()
     log("questasim : %s" % (qbin or "<not found, pass it through PATH>"))
 
     t0 = time.time()
     clean_workdir()
+
+    if pat_bytes is not None:
+        pat_file = WORKDIR / pat_file.name
+        pat_file.write_bytes(pat_bytes)
 
     if opts.case:
         case_path = norm_path(opts.case)
