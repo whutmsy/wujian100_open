@@ -80,8 +80,6 @@
     NOT RUN means the run hit -tmax before the case finished, usually a missing
     stimulus module or a clock that never starts. find out why before raising -tmax.
 
-# How to get the debug tool
-    download from the url https://occ.t-head.cn/community/download?id=616215132330000384 
 # Dicussion
     If you want to discuss about the wujian100_open project. You can scan the DingDing QR code below：
 <img src="https://github.com/T-head-Semi/wujian100_open/blob/master/doc/QR_Code_Wujian100.JPG" width="485" height="640" alt="Wujian100" align=center/>
